@@ -1,0 +1,384 @@
+name: Build PG Setup Console APK
+on:
+  push:
+    paths:
+      - '.github/workflows/build-pgconsole.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate project files
+        run: |
+          mkdir -p $(dirname settings.gradle.kts)
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "PgSetupConsole"
+          include(":app")
+          EOF_FILE
+          mkdir -p $(dirname build.gradle.kts)
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.20" apply false
+          }
+          EOF_FILE
+          mkdir -p $(dirname gradle.properties)
+          cat > gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF_FILE
+          mkdir -p $(dirname app/build.gradle.kts)
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+
+          android {
+              namespace = "com.example.pgconsole"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.pgconsole"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "2.0"
+              }
+              buildFeatures { compose = true }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.09.00"))
+              implementation("androidx.activity:activity-compose:1.9.2")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.ui:ui")
+          }
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/AndroidManifest.xml)
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+
+              <queries>
+                  <package android:name="com.termux" />
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:label="PG Setup Console"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          mkdir -p $(dirname app/src/main/java/com/example/pgconsole/MainActivity.kt)
+          cat > app/src/main/java/com/example/pgconsole/MainActivity.kt <<'EOF_FILE'
+          package com.example.pgconsole
+
+          import android.app.PendingIntent
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.text.selection.SelectionContainer
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.Button
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.OutlinedButton
+          import androidx.compose.material3.OutlinedTextField
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.platform.LocalClipboardManager
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.text.font.FontFamily
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
+
+          const val ACTION_RESULT = "com.example.pgconsole.TERMUX_RESULT"
+          const val TERMUX_PERMISSION = "com.termux.permission.RUN_COMMAND"
+          private const val TERMUX_HOME = "/data/data/com.termux/files/home"
+          private const val TERMUX_BASH = "/data/data/com.termux/files/usr/bin/bash"
+
+          // ======================= READY-MADE SCRIPTS =======================
+          // In the texts below "@@" stands for the dollar sign and is converted when the text is shown.
+
+          object Scripts {
+              private const val HEAD = """export DEBIAN_FRONTEND=noninteractive
+          export PREFIX=/data/data/com.termux/files/usr
+          export HOME=/data/data/com.termux/files/home
+          export PATH=@@PREFIX/bin:@@PATH
+          """
+
+              private const val INSTALL = """pkg update -y
+          pkg install -y postgresql
+          mkdir -p @@PREFIX/var/lib/postgresql
+          [ -f @@PREFIX/var/lib/postgresql/PG_VERSION ] || initdb --auth-local=trust --auth-host=scram-sha-256 -D @@PREFIX/var/lib/postgresql
+          pg_ctl -D @@PREFIX/var/lib/postgresql status >/dev/null 2>&1 || pg_ctl -D @@PREFIX/var/lib/postgresql -l @@PREFIX/var/lib/postgresql/server.log start
+          sleep 3
+          cat > @@HOME/start-pg.sh <<'EOS'
+          termux-wake-lock
+          pg_ctl -D @@PREFIX/var/lib/postgresql status >/dev/null 2>&1 || pg_ctl -D @@PREFIX/var/lib/postgresql -l @@PREFIX/var/lib/postgresql/server.log start
+          EOS
+          echo "PostgreSQL server installed and running."
+          """
+
+              private const val START = """pg_ctl -D @@PREFIX/var/lib/postgresql status >/dev/null 2>&1 || pg_ctl -D @@PREFIX/var/lib/postgresql -l @@PREFIX/var/lib/postgresql/server.log start
+          sleep 2
+          pg_ctl -D @@PREFIX/var/lib/postgresql status
+          """
+
+              private const val STATUS = """pg_ctl -D @@PREFIX/var/lib/postgresql status
+          psql -d postgres -c "\l"
+          psql -d postgres -c "\du"
+          """
+
+              private fun fix(s: String) = s.replace("@@", "$")
+
+              fun header(): String = fix(HEAD)
+              fun install(): String = fix(INSTALL)
+              fun start(): String = fix(START)
+              fun status(): String = fix(STATUS)
+          }
+
+          // ======================= SEND A SCRIPT TO TERMUX =======================
+
+          // Returns null when the request was handed to Termux, otherwise a readable error.
+          fun runInTermux(context: Context, script: String): String? {
+              return try {
+                  val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                      (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+                  val resultIntent = Intent(ACTION_RESULT).setPackage(context.packageName)
+                  val pending = PendingIntent.getBroadcast(context, 0, resultIntent, flags)
+
+                  val intent = Intent("com.termux.RUN_COMMAND").apply {
+                      setClassName("com.termux", "com.termux.app.RunCommandService")
+                      putExtra("com.termux.RUN_COMMAND_PATH", TERMUX_BASH)
+                      putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", Scripts.header() + script))
+                      putExtra("com.termux.RUN_COMMAND_WORKDIR", TERMUX_HOME)
+                      putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+                      putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pending)
+                  }
+                  val started = context.startForegroundService(intent)
+                  if (started == null) {
+                      "Termux was not found or does not accept external commands. Install Termux from F-Droid or GitHub."
+                  } else {
+                      null
+                  }
+              } catch (e: SecurityException) {
+                  "Permission denied. Tap 'Grant Termux permission' and make sure allow-external-apps=true is set in Termux."
+              } catch (e: Exception) {
+                  "Could not start Termux command: " + e.message
+              }
+          }
+
+          // ======================= ACTIVITY AND SCREEN =======================
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent { MaterialTheme { ConsoleScreen() } }
+              }
+          }
+
+          @Composable
+          fun ConsoleScreen() {
+              val context = LocalContext.current
+              val clipboard = LocalClipboardManager.current
+              var script by remember { mutableStateOf("") }
+              var output by remember { mutableStateOf("Output appears here when the script finishes.") }
+              var running by remember { mutableStateOf(false) }
+              var permissionGranted by remember {
+                  mutableStateOf(
+                      context.checkSelfPermission(TERMUX_PERMISSION) == PackageManager.PERMISSION_GRANTED
+                  )
+              }
+              val permissionLauncher = rememberLauncherForActivityResult(
+                  ActivityResultContracts.RequestPermission()
+              ) { granted -> permissionGranted = granted }
+
+              // Receives the result that Termux sends back when the script has finished.
+              DisposableEffect(Unit) {
+                  val receiver = object : BroadcastReceiver() {
+                      override fun onReceive(c: Context, intent: Intent) {
+                          running = false
+                          val b = intent.getBundleExtra("result")
+                          output = if (b == null) {
+                              "Termux returned no result."
+                          } else {
+                              val stdout = b.getString("stdout").orEmpty()
+                              val stderr = b.getString("stderr").orEmpty()
+                              val exit = b.getInt("exitCode", Int.MIN_VALUE)
+                              val errMsg = b.getString("errmsg").orEmpty()
+                              buildString {
+                                  if (errMsg.isNotBlank()) append("Termux error: ").append(errMsg).append("\n\n")
+                                  append("Exit code: ")
+                                  append(if (exit == Int.MIN_VALUE) "unknown" else exit.toString())
+                                  append("\n\n")
+                                  if (stdout.isNotBlank()) append("--- output ---\n").append(stdout).append("\n")
+                                  if (stderr.isNotBlank()) append("--- errors ---\n").append(stderr).append("\n")
+                              }
+                          }
+                      }
+                  }
+                  ContextCompat.registerReceiver(
+                      context, receiver, IntentFilter(ACTION_RESULT), ContextCompat.RECEIVER_NOT_EXPORTED
+                  )
+                  onDispose { context.unregisterReceiver(receiver) }
+              }
+
+              Column(
+                  modifier = Modifier
+                      .fillMaxSize()
+                      .verticalScroll(rememberScrollState())
+                      .padding(16.dp),
+                  verticalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                  Text("PG Setup Console", style = MaterialTheme.typography.headlineSmall)
+                  Text("Generic backend creator: install the server once, then paste the backend script that each app shows you and tap Run.")
+
+                  Text("One-time preparation", style = MaterialTheme.typography.titleMedium)
+                  Text("1. Install Termux from F-Droid or GitHub (not the Play Store).")
+                  Text("2. Open Termux, run the command below, then close Termux completely and open it again:")
+                  SelectionContainer {
+                      Text(
+                          "mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties",
+                          style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                      )
+                  }
+                  Text("3. Tap Grant Termux permission. 4. Set battery use of Termux to Unrestricted.")
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      OutlinedButton(
+                          onClick = {
+                              context.packageManager.getLaunchIntentForPackage("com.termux")
+                                  ?.let { context.startActivity(it) }
+                          },
+                          modifier = Modifier.weight(1f)
+                      ) { Text("Open Termux") }
+                      OutlinedButton(
+                          onClick = { permissionLauncher.launch(TERMUX_PERMISSION) },
+                          modifier = Modifier.weight(1f)
+                      ) { Text(if (permissionGranted) "Permission granted" else "Grant Termux permission") }
+                  }
+
+                  Text("Generic tools", style = MaterialTheme.typography.titleMedium)
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      OutlinedButton(onClick = { script = Scripts.install() }, modifier = Modifier.weight(1f)) {
+                          Text("1 Install server")
+                      }
+                      OutlinedButton(onClick = { script = Scripts.start() }, modifier = Modifier.weight(1f)) {
+                          Text("2 Start server")
+                      }
+                  }
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                      OutlinedButton(onClick = { script = Scripts.status() }, modifier = Modifier.weight(1f)) {
+                          Text("Status")
+                      }
+                      OutlinedButton(
+                          onClick = { clipboard.getText()?.text?.let { script = it } },
+                          modifier = Modifier.weight(1f)
+                      ) { Text("Paste from clipboard") }
+                  }
+
+                  OutlinedTextField(
+                      value = script,
+                      onValueChange = { script = it },
+                      label = { Text("Backend script from any app (paste here)") },
+                      textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                      minLines = 14,
+                      modifier = Modifier.fillMaxWidth()
+                  )
+
+                  Button(
+                      onClick = {
+                          if (script.isBlank()) {
+                              output = "Nothing to run."
+                          } else {
+                              running = true
+                              output = "Running... installing PostgreSQL can take several minutes. Keep this app open."
+                              val error = runInTermux(context, script)
+                              if (error != null) {
+                                  running = false
+                                  output = error
+                              }
+                          }
+                      },
+                      modifier = Modifier.fillMaxWidth()
+                  ) { Text(if (running) "Running... (tap to run again)" else "Run in Termux") }
+
+                  OutlinedButton(onClick = { script = "" }, modifier = Modifier.fillMaxWidth()) {
+                      Text("Clear commands")
+                  }
+
+                  Text("Result", style = MaterialTheme.typography.titleMedium)
+                  SelectionContainer {
+                      Text(
+                          output,
+                          style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                      )
+                  }
+              }
+          }
+          EOF_FILE
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Accept Android SDK licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null || true
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgconsole-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
