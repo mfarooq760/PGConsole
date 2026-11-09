@@ -1,19 +1,4 @@
-name: Build PG Setup Console APK
-on:
-  push:
-    paths:
-      - '.github/workflows/build-pgconsole.yml'
-  workflow_dispatch:
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Generate project files
-        run: |
-          mkdir -p $(dirname settings.gradle.kts)
-          cat > settings.gradle.kts <<'EOF_FILE'
-          pluginManagement {
+
               repositories { google(); mavenCentral(); gradlePluginPortal() }
           }
           dependencyResolutionManagement {
