@@ -52,8 +52,8 @@ jobs:
                   applicationId = "com.example.pgconsole"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2.0"
+                  versionCode = 3
+                  versionName = "2.1"
               }
               buildFeatures { compose = true }
               compileOptions {
@@ -137,6 +137,7 @@ jobs:
           import androidx.compose.ui.Modifier
           import androidx.compose.ui.platform.LocalClipboardManager
           import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.AnnotatedString
           import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.font.FontFamily
           import androidx.compose.ui.unit.dp
@@ -147,6 +148,8 @@ jobs:
           const val TERMUX_PERMISSION = "com.termux.permission.RUN_COMMAND"
           private const val TERMUX_HOME = "/data/data/com.termux/files/home"
           private const val TERMUX_BASH = "/data/data/com.termux/files/usr/bin/bash"
+          private const val SETUP_COMMAND =
+              "mkdir -p ~/.termux && echo 'allow-external-apps=true' > ~/.termux/termux.properties && termux-reload-settings"
 
           // ======================= READY-MADE SCRIPTS =======================
           // In the texts below "@@" stands for the dollar sign and is converted when the text is shown.
@@ -260,6 +263,11 @@ jobs:
                               val errMsg = b.getString("errmsg").orEmpty()
                               buildString {
                                   if (errMsg.isNotBlank()) append("Termux error: ").append(errMsg).append("\n\n")
+                                  if (errMsg.contains("allow-external-apps")) {
+                                      append("HOW TO FIX: copy the setup command (button above), paste it in Termux and press Enter. ")
+                                      append("Then fully exit Termux (notification > Exit, swipe it out of recent apps), reopen it, ")
+                                      append("come back here and tap Run again.\n\n")
+                                  }
                                   append("Exit code: ")
                                   append(if (exit == Int.MIN_VALUE) "unknown" else exit.toString())
                                   append("\n\n")
@@ -287,14 +295,18 @@ jobs:
 
                   Text("One-time preparation", style = MaterialTheme.typography.titleMedium)
                   Text("1. Install Termux from F-Droid or GitHub (not the Play Store).")
-                  Text("2. Open Termux, run the command below, then close Termux completely and open it again:")
+                  Text("2. Open Termux, paste the command below, press Enter, then fully exit Termux (notification > Exit) and open it again:")
                   SelectionContainer {
                       Text(
-                          "mkdir -p ~/.termux && echo 'allow-external-apps=true' >> ~/.termux/termux.properties",
+                          SETUP_COMMAND,
                           style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                       )
                   }
-                  Text("3. Tap Grant Termux permission. 4. Set battery use of Termux to Unrestricted.")
+                  OutlinedButton(
+                      onClick = { clipboard.setText(AnnotatedString(SETUP_COMMAND)) },
+                      modifier = Modifier.fillMaxWidth()
+                  ) { Text("Copy setup command") }
+                  Text("3. Tap Grant Termux permission (it turns off once granted). 4. Set battery use of Termux to Unrestricted.")
                   Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                       OutlinedButton(
                           onClick = {
@@ -305,6 +317,7 @@ jobs:
                       ) { Text("Open Termux") }
                       OutlinedButton(
                           onClick = { permissionLauncher.launch(TERMUX_PERMISSION) },
+                          enabled = !permissionGranted,
                           modifier = Modifier.weight(1f)
                       ) { Text(if (permissionGranted) "Permission granted" else "Grant Termux permission") }
                   }
